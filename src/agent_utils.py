@@ -408,3 +408,20 @@ class AgentTrace:
         for line in content.splitlines():
             if line.strip():
                 _trace_print(f"  {_C.DIM}    | {line}{_C.RESET}")
+
+
+def run_agent_with_retry(agent_builder, prompt: str, max_retries: int = 3) -> float:
+    for attempt in range(max_retries):
+        try:
+            agent = agent_builder()
+            t = time.time()
+            agent(prompt)
+            return time.time() - t
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"    [Retry {attempt + 1}/{max_retries}] {e.__class__.__name__}, waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"    [Failed] {e.__class__.__name__} after {max_retries} attempts")
+                raise

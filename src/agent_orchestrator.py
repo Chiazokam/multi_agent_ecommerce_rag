@@ -61,6 +61,7 @@ from botocore.exceptions import ClientError
 
 import config
 from bedrock_kb_retrieval import retrieve_from_knowledge_base, format_kb_results
+from agent_utils import run_agent_with_retry
 
 # Configure logging for debugging
 logging.basicConfig(
@@ -225,12 +226,13 @@ def build_inventory_agent() -> Agent:
     """
 
     # TODO: Create a BedrockModel using the WORKER model
-    pass
+    model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.1)
 
     # TODO: System prompt for the Inventory Agent
-    pass
+    system_prompt="""You are an inventory agent. Your ONLY job is to gather order and customer facts from DynamoDB. 
+    You do NOT make decisions - you should only retrieve information accurately and never make eligibility decisions.
+"""
 
-    # TODO: Implement check_order_status
     # NOTE: the Orders table has a COMPOSITE key (customer_id = partition key,
     # order_id = sort key), so a get_item needs BOTH values. That is why this
     # tool takes customer_id as well as order_id.
@@ -248,9 +250,19 @@ def build_inventory_agent() -> Agent:
             Order record (order_id, status, product_name, order_date, price, ...)
             or a not-found message
         """
-        pass
+        table = dynamodb.Table(config.ORDERS_TABLE)
+        response = table.get_item(
+            Key={'customer_id': customer_id, 'order_id': order_id}
+        )
+        order = response.get('Item')
+        if order is None:
+            return {
+                'message': (
+                    f"Order {order_id} was not found for customer {customer_id}."
+                )
+            }
+        return order
 
-    # TODO: Implement get_customer_tier
     @tool
     def get_customer_tier(customer_id: str) -> dict:
         """
@@ -263,9 +275,13 @@ def build_inventory_agent() -> Agent:
         Returns:
             Customer profile including tier and account details
         """
-        pass
+        table = dynamodb.Table(config.CUSTOMERS_TABLE)
+        response = table.get_item(Key={'customer_id': customer_id})
+        customer = response.get('Item')
+        if customer is None:
+            return {'message': f"Customer {customer_id} was not found."}
+        return customer
 
-    # TODO: Implement list_customer_orders
     @tool
     def list_customer_orders(customer_id: str) -> dict:
         """
@@ -277,10 +293,24 @@ def build_inventory_agent() -> Agent:
         Returns:
             List of all orders with order_id, status, order_date, and amount
         """
-        pass
+        table = dynamodb.Table(config.ORDERS_TABLE)
+        orders = []
+        query_kwargs = {
+            'KeyConditionExpression': Key('customer_id').eq(customer_id)
+        }
+
+        while True:
+            response = table.query(**query_kwargs)
+            orders.extend(response.get('Items', []))
+            last_evaluated_key = response.get('LastEvaluatedKey')
+            if not last_evaluated_key:
+                break
+            query_kwargs['ExclusiveStartKey'] = last_evaluated_key
+
+        return {'customer_id': customer_id, 'orders': orders}
 
     # TODO: Instantiate and return the Agent
-    pass
+    return Agent(model=model, system_prompt=system_prompt, tools=[check_order_status, get_customer_tier, list_customer_orders])
 
 
 # ───────────────────────────────────────────────────────
@@ -296,12 +326,15 @@ def build_refund_agent() -> Agent:
     """
 
     # TODO: Create a BedrockModel
-    pass
+    model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.1)
 
     # TODO: System prompt for the Refund Agent
+    system_prompt="""You are a refund agent. Your ONLY job is to make refund eligibilty decisons based on
+      order facts from WorkflowState before applying the correct policy window. 
+      Always check inventory context first, then apply the correct return window.
+"""
     pass
 
-    # TODO: Implement get_inventory_context
     @tool
     def get_inventory_context(session_id: str) -> dict:
         """
@@ -313,9 +346,9 @@ def build_refund_agent() -> Agent:
         Returns:
             The inventory_agent field from WorkflowState, or empty dict if not yet set
         """
-        pass
+        state = _read_workflow_state(session_id)
+        return (state or {}).get('inventory_agent') or {}
 
-    # TODO: Implement initiate_refund
     @tool
     def initiate_refund(customer_id: str, order_id: str, reason: str) -> dict:
         """
@@ -329,10 +362,50 @@ def build_refund_agent() -> Agent:
         Returns:
             Confirmation dict with return_reference number and instructions
         """
-        pass
+        return_reference = f"RET-{uuid.uuid4().hex[:12].upper()}"
+        table = dynamodb.Table(config.ORDERS_TABLE)
+
+        try:
+            table.update_item(
+                Key={'customer_id': customer_id, 'order_id': order_id},
+                UpdateExpression=(
+                    'SET return_status = :return_status, '
+                    'return_reason = :return_reason, '
+                    'return_reference = :return_reference, '
+                    'return_requested_at = :return_requested_at'
+                ),
+                ConditionExpression=(
+                    'attribute_exists(customer_id) AND attribute_exists(order_id)'
+                ),
+                ExpressionAttributeValues={
+                    ':return_status': 'requested',
+                    ':return_reason': reason,
+                    ':return_reference': return_reference,
+                    ':return_requested_at': time.strftime(
+                        '%Y-%m-%dT%H:%M:%SZ', time.gmtime()
+                    ),
+                },
+            )
+        except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+            return {
+                'message': (
+                    f"Order {order_id} was not found for customer {customer_id}; "
+                    "no return was initiated."
+                )
+            }
+
+        return {
+            'order_id': order_id,
+            'return_status': 'requested',
+            'return_reference': return_reference,
+            'instructions': (
+                'Print the prepaid return shipping label, pack the item securely, '
+                'and drop it off at an authorized carrier location.'
+            ),
+        }
 
     # TODO: Instantiate and return the Agent
-    pass
+    return Agent(model=model, system_prompt=system_prompt, tools=[get_inventory_context, initiate_refund])
 
 
 # ───────────────────────────────────────────────────────
@@ -348,32 +421,71 @@ def build_policy_agent() -> Agent:
     the combined results into a complete, grounded policy answer.
     """
 
+    # model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.0)
+
+    # system_prompt = """You are a Returns policy retrieval agent. Your ONLY job:
+    # 1. Call retrieve_returns_policy with the query
+    # 2. Report how many passages were found and their relevance scores
+    # Do NOT add any other commentary."""
+
     # TODO: Build ReturnsPolicyRetrieverAgent
     @tool
     def retrieve_returns_policy(query: str) -> str:
         """Retrieve relevant passages from the Returns Policy knowledge base."""
-        pass
 
+        passages = retrieve_from_knowledge_base(config.RETURNS_KB_ID, query)
+        return config.format_kb_results(passages)
+    
     # Create the ReturnsPolicyRetrieverAgent with the tool above
-    pass
+    returns_retriever = Agent(
+        name="ReturnsPolicyRetrieverAgent",
+        model=BedrockModel(model_id=config.WORKER_MODEL_ID,
+            region_name=config.AWS_REGION, temperature=0.0),
+            system_prompt="""You are a Returns policy retrieval agent. Your ONLY job:
+            1. Call retrieve_returns_policy with the query
+            2. Report how many passages were found and their relevance scores
+            Do NOT add any other commentary.""",
+            tools=[retrieve_returns_policy],
+        )
+    
 
     # TODO: Build ShippingPolicyRetrieverAgent
     @tool
     def retrieve_shipping_policy(query: str) -> str:
         """Retrieve relevant passages from the Shipping Policy knowledge base."""
-        pass
+        passages = retrieve_from_knowledge_base(config.SHIPPING_KB_ID, query)
+        return config.format_kb_results(passages)
 
     # Create the ShippingPolicyRetrieverAgent with the tool above
-    pass
+    shipping_retriever = Agent(
+        name="ShippingPolicyRetrieverAgent",
+        model=BedrockModel(model_id=config.WORKER_MODEL_ID,
+            region_name=config.AWS_REGION, temperature=0.0),
+            system_prompt="""You are a Shipping policy retrieval agent. Your ONLY job:
+            1. Call retrieve_shipping_policy with the query
+            2. Report how many passages were found and their relevance scores
+            Do NOT add any other commentary.""",
+            tools=[retrieve_shipping_policy],
+        )
 
     # TODO: Build WarrantyPolicyRetrieverAgent
     @tool
     def retrieve_warranty_policy(query: str) -> str:
         """Retrieve relevant passages from the Warranty Policy knowledge base."""
-        pass
+        passages = retrieve_from_knowledge_base(config.WARRANTY_KB_ID, query)
+        return config.format_kb_results(passages)
 
     # Create the WarrantyPolicyRetrieverAgent with the tool above
-    pass
+    warranty_retriever = Agent(
+        name="WarrantyPolicyRetrieverAgent",
+        model=BedrockModel(model_id=config.WORKER_MODEL_ID,
+            region_name=config.AWS_REGION, temperature=0.0),
+            system_prompt="""You are a Warranty policy retrieval agent. Your ONLY job:
+            1. Call retrieve_warranty_policy with the query
+            2. Report how many passages were found and their relevance scores
+            Do NOT add any other commentary.""",
+            tools=[retrieve_warranty_policy],
+        )
 
     # TODO: Implement search_all_policies - parallel RAG retrieval tool
     @tool
@@ -392,6 +504,9 @@ def build_policy_agent() -> Agent:
         """
         # Build a dict mapping domain names to their retriever agents
         # e.g. {'Returns': returns_retriever, 'Shipping': shipping_retriever, ...}
+        retriever_agents = {
+            'Returns': returns_retriever, 'Shipping': shipping_retriever, 'Warranty': warranty_retriever
+        }
 
         # ── Trace: show parallel KB dispatch to learners ──────────────────
         trace.kb_start({
@@ -414,10 +529,37 @@ def build_policy_agent() -> Agent:
             Results are returned as values and printed cleanly and
             sequentially by trace.kb_result() after all futures join.
             """
-            pass
+            try:
+                agent.messages.clear()
+                return domain, str(agent(query))
+            except Exception as exc:
+                return domain, f"[{domain} retrieval failed: {exc}]"
 
         # Use ThreadPoolExecutor to run all three retrievers in parallel
         # Collect results into a dict: {'Returns': '...', 'Shipping': '...', ...}
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(
+                    run_agent_with_retry,
+                    lambda: build_cs_retriever(query),
+                    f"Search for: {query}"
+                ): "CS",
+                executor.submit(
+                    run_agent_with_retry,
+                    lambda: build_bio_retriever(query),
+                    f"Search for: {query}"
+                ): "Bio",
+            }
+
+            timings = {}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    timings[name] = future.result()
+                except Exception as e:
+                    print(f"    {name} retriever failed: {e}")
+                    timings[name] = -1
 
         # ── Trace: all KBs responded - print each result sequentially ─────
         # trace.kb_done(len(retrievers))
