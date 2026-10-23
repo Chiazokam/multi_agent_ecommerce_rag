@@ -538,36 +538,30 @@ def build_policy_agent() -> Agent:
         # Use ThreadPoolExecutor to run all three retrievers in parallel
         # Collect results into a dict: {'Returns': '...', 'Shipping': '...', ...}
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        results = {}
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures = {
-                executor.submit(
-                    run_agent_with_retry,
-                    lambda: build_cs_retriever(query),
-                    f"Search for: {query}"
-                ): "CS",
-                executor.submit(
-                    run_agent_with_retry,
-                    lambda: build_bio_retriever(query),
-                    f"Search for: {query}"
-                ): "Bio",
+                executor.submit(_run_retriever, domain, agent, query): domain
+                for domain, agent in retriever_agents.items()
             }
 
-            timings = {}
             for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    timings[name] = future.result()
-                except Exception as e:
-                    print(f"    {name} retriever failed: {e}")
-                    timings[name] = -1
+                domain, text = future.result()
+                results[domain] = text
 
         # ── Trace: all KBs responded - print each result sequentially ─────
-        # trace.kb_done(len(retrievers))
-        # for domain in ['Returns', 'Shipping', 'Warranty']:
-        #     trace.kb_result(domain, results.get(domain, '[No results]'))
+        trace.kb_done(len(retriever_agents))
+        for domain in ['Returns', 'Shipping', 'Warranty']:
+            trace.kb_result(domain, results.get(domain, '[No results]'))
 
         # Combine results from all three domains and return
-        pass
+        sections = []
+        for domain in ['Returns', 'Shipping', 'Warranty']:
+            sections.append(
+                f'=== {domain} Policy ===\n{results.get(domain, "[No results]")}'
+            )
+        return '\n\n'.join(sections)
+    
 
     # TODO: Create a BedrockModel for the PolicyAgent coordinator
     pass
