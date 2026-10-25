@@ -564,13 +564,14 @@ def build_policy_agent() -> Agent:
     
 
     # TODO: Create a BedrockModel for the PolicyAgent coordinator
-    pass
+    model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.2)
 
     # TODO: System prompt for PolicyAgent coordinator
-    pass
+    system_prompt="""You are a policy agent that retrieves data by running three specialized retriever subagents in parallel.
+    Always call search_all_policies first, then synthesize the retrieved passages into a grounded answer."""
 
     # TODO: Instantiate and return the PolicyAgent coordinator
-    pass
+    return Agent(model=model, system_prompt=system_prompt, tools=[search_all_policies])
 
 
 # ───────────────────────────────────────────────────────
@@ -586,12 +587,13 @@ def build_communication_agent() -> Agent:
     """
 
     # TODO: Create a BedrockModel
-    pass
+    model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.3)
 
     # TODO: System prompt for the Communication Agent
-    pass
+    system_prompt="""You are a communication agent. Your ONLY job is to draft the final customer-facing response. 
+    You will read the full WorkflowState - all findings from previous agents, and compose a warm, professional, empathetic message.
+      """
 
-    # TODO: Implement get_full_workflow_context
     @tool
     def get_full_workflow_context(session_id: str) -> dict:
         """
@@ -603,10 +605,15 @@ def build_communication_agent() -> Agent:
         Returns:
             Full WorkflowState dict (inventory_agent, policy_agent, refund_agent)
         """
-        pass
+        state = _read_workflow_state(session_id) or {}
+        return {
+            'inventory_agent': state.get('inventory_agent', ''),
+            'policy_agent': state.get('policy_agent', ''),
+            'refund_agent': state.get('refund_agent', ''),
+        }
 
     # TODO: Instantiate and return the Agent
-    pass
+    return Agent(model=model, system_prompt=system_prompt, tools=[get_full_workflow_context])
 
 
 # ───────────────────────────────────────────────────────
@@ -624,12 +631,21 @@ def build_orchestrator_agent(
     """
 
     # TODO: Create a BedrockModel using the ORCHESTRATOR model
-    pass
+    model = BedrockModel(model_id=config.ORCHESTRATOR_MODEL_ID, region_name=config.AWS_REGION, temperature=0.0)
 
     # TODO: System prompt for the Orchestrator
     # For arithmetic, skip Inventory, Policy and Refund, but still call
     # CommunicationAgent last. Round currency only after the full calculation.
-    pass
+    system_prompt="""You are the orchestrator that routes requests and manages the workflowState. You DO NOT answer questions directly — 
+    you delegate everything to the appropriate specialist agent. You follow these routing rules:
+    1. Every request always calls "initialize_session" first
+    2. All Order status / return / refund requests route to inventory agent first, then refund agent
+    3. Policy meaning questions (return windows, shipping rates, warranty terms) route to the policy agent
+    4. Account questions ("what is my tier?", "am I premium?") route to inventory agent — never policy agent (it only knows policy text, not customer data)
+    5. Math / calculation questions, Orchestrator → CommunicationAgent, skip Inventory, Policy and Refund. Round currency only after the full calculation
+    6. Every request, always (last step), route to communication agent to compose the final reply
+    7. The Orchestrator MUST NEVER write the final customer-facing response itself. It must always delegate to the communication agent as its very last tool call — no exceptions.
+    """
 
     # Each routing tool follows the same pattern:
     #   1. read the current WorkflowState  (_read_workflow_state)
@@ -638,6 +654,32 @@ def build_orchestrator_agent(
     #      (_update_workflow_state(session_id, {'<column>': text}, expected_version))
     # The terminal trace UI can show each step: call trace.step_start('inventory_agent')
     # before the worker runs and trace.step_done('inventory_agent', old_version) after.
+
+    def route_to_worker(
+        session_id: str,
+        request: str,
+        agent: Agent,
+        worker: str,
+        customer_id: Optional[str] = None,
+    ):
+        state = _read_workflow_state(session_id) or {}
+        
+        old_version = int(state.get('version', 0))
+
+        trace.step_start(worker)
+
+        customer_context = f" [Customer ID: {customer_id}]" if customer_id else ""
+        prompt = f"[Session ID: {session_id}]{customer_context} {request}"
+        result = agent(prompt)
+        text = _strip_xml_tags(str(result))
+        _update_workflow_state(
+            session_id,
+            {worker: text},
+            old_version ,
+        )
+
+        trace.step_done(worker, old_version)
+        return text
 
     # TODO: Implement route_to_inventory_agent
     @tool
@@ -654,7 +696,14 @@ def build_orchestrator_agent(
         Returns:
             Inventory facts retrieved by the InventoryAgent
         """
-        pass
+        return route_to_worker(
+            session_id,
+            request,
+            inventory_agent,
+            'inventory_agent',
+            customer_id=customer_id,
+        )
+
 
     # TODO: Implement route_to_policy_agent
     @tool
@@ -670,7 +719,8 @@ def build_orchestrator_agent(
         Returns:
             Policy information retrieved and synthesized by PolicyAgent
         """
-        pass
+        return route_to_worker(session_id, request, policy_agent, 'policy_agent')
+  
 
     # TODO: Implement route_to_refund_agent
     @tool
@@ -687,7 +737,13 @@ def build_orchestrator_agent(
         Returns:
             Refund decision from the RefundAgent
         """
-        pass
+        return route_to_worker(
+                    session_id,
+                    request,
+                    refund_agent,
+                    'refund_agent',
+                    customer_id=customer_id,
+                )
 
     # TODO: Implement route_to_communication_agent
     @tool
@@ -705,7 +761,14 @@ def build_orchestrator_agent(
         Returns:
             Final customer-facing response drafted by CommunicationAgent
         """
-        pass
+        return route_to_worker(
+                    session_id,
+                    original_request,
+                    communication_agent,
+                    'communication_agent',
+                    customer_id=customer_id,
+                )
+     
 
     # TODO: Implement initialize_session
     @tool
@@ -721,10 +784,28 @@ def build_orchestrator_agent(
         Returns:
             Confirmation that the session was initialized
         """
-        pass
-
+        existing = _read_workflow_state(session_id)
+        if existing:
+            return (
+                f"Session {session_id} already initialized for "
+                f"customer {existing.get('customer_id', customer_id)}"
+            )
+        _create_workflow_state(session_id, customer_id)
+        return f"Session {session_id} initialized for customer {customer_id}"
+    
     # TODO: Instantiate and return the OrchestratorAgent
-    pass
+    return Agent(
+        model=model,
+        system_prompt=system_prompt,
+        tools=[
+            route_to_inventory_agent,
+            route_to_policy_agent,
+            route_to_refund_agent,
+            route_to_communication_agent,
+            initialize_session
+        ],
+    )
+
 
 
 # ═══════════════════════════════════════════════════════
