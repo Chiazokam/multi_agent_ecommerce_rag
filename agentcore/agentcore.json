@@ -19,7 +19,42 @@
       "protocol": "HTTP",
       "instrumentation": {
         "enableOtel": false
-      }
+      },
+      "executionRoleArn": "arn:aws:iam::041297286339:role/udacity-agentcore-agentcore-role",
+      "envVars": [
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "PROJECT_NAME",
+          "value": "udacity-agentcore"
+        },
+        {
+          "name": "RETURNS_KB_ID",
+          "value": "X6LIQFPFEB"
+        },
+        {
+          "name": "SHIPPING_KB_ID",
+          "value": "2BBL8GNOZS"
+        },
+        {
+          "name": "WARRANTY_KB_ID",
+          "value": "E5FXT9H3BC"
+        },
+        {
+          "name": "AGENT_LOG_GROUP",
+          "value": "/aws/bedrock/agentcore/udacity-agentcore"
+        },
+        {
+          "name": "GUARDRAIL_ID",
+          "value": "n7fin21ln0vy"
+        },
+        {
+          "name": "GUARDRAIL_VERSION",
+          "value": "1"
+        }
+      ]
     }
   ],
   "memories": [],
