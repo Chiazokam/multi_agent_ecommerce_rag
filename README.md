@@ -159,6 +159,5 @@ starter/
 ```
 
 ## Submissions
-![Recording of all tests passed](/screenshots/tests_passed_recording.mov)
 ![Screenshot of tests passed](/screenshots/tests_passed_screenshot.png)
 ![Screenshot of X-RAY traces](/screenshots/xray_traces_screenshot.png)
