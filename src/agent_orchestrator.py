@@ -225,10 +225,8 @@ def build_inventory_agent() -> Agent:
     only retrieves data for the OrchestratorAgent to share with downstream agents.
     """
 
-    # TODO: Create a BedrockModel using the WORKER model
     model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.1)
 
-    # TODO: System prompt for the Inventory Agent
     system_prompt="""You are an inventory agent. Your ONLY job is to gather order and customer facts from DynamoDB. 
     You do NOT make decisions - you should only retrieve information accurately and never make eligibility decisions.
 """
@@ -309,7 +307,6 @@ def build_inventory_agent() -> Agent:
 
         return {'customer_id': customer_id, 'orders': orders}
 
-    # TODO: Instantiate and return the Agent
     return Agent(model=model, system_prompt=system_prompt, tools=[check_order_status, get_customer_tier, list_customer_orders])
 
 
@@ -325,10 +322,8 @@ def build_refund_agent() -> Agent:
     WorkflowState and applies the correct policy window per customer tier.
     """
 
-    # TODO: Create a BedrockModel
     model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.1)
 
-    # TODO: System prompt for the Refund Agent
     system_prompt="""You are a refund agent. Your ONLY job is to make refund eligibilty decisons based on
       order facts from WorkflowState before applying the correct policy window. 
       Always check inventory context first, then apply the correct return window.
@@ -404,7 +399,6 @@ def build_refund_agent() -> Agent:
             ),
         }
 
-    # TODO: Instantiate and return the Agent
     return Agent(model=model, system_prompt=system_prompt, tools=[get_inventory_context, initiate_refund])
 
 
@@ -421,20 +415,12 @@ def build_policy_agent() -> Agent:
     the combined results into a complete, grounded policy answer.
     """
 
-    # model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.0)
-
-    # system_prompt = """You are a Returns policy retrieval agent. Your ONLY job:
-    # 1. Call retrieve_returns_policy with the query
-    # 2. Report how many passages were found and their relevance scores
-    # Do NOT add any other commentary."""
-
-    # TODO: Build ReturnsPolicyRetrieverAgent
     @tool
     def retrieve_returns_policy(query: str) -> str:
         """Retrieve relevant passages from the Returns Policy knowledge base."""
 
         passages = retrieve_from_knowledge_base(config.RETURNS_KB_ID, query)
-        return config.format_kb_results(passages)
+        return format_kb_results(passages)
     
     # Create the ReturnsPolicyRetrieverAgent with the tool above
     returns_retriever = Agent(
@@ -449,12 +435,11 @@ def build_policy_agent() -> Agent:
         )
     
 
-    # TODO: Build ShippingPolicyRetrieverAgent
     @tool
     def retrieve_shipping_policy(query: str) -> str:
         """Retrieve relevant passages from the Shipping Policy knowledge base."""
         passages = retrieve_from_knowledge_base(config.SHIPPING_KB_ID, query)
-        return config.format_kb_results(passages)
+        return format_kb_results(passages)
 
     # Create the ShippingPolicyRetrieverAgent with the tool above
     shipping_retriever = Agent(
@@ -468,12 +453,11 @@ def build_policy_agent() -> Agent:
             tools=[retrieve_shipping_policy],
         )
 
-    # TODO: Build WarrantyPolicyRetrieverAgent
     @tool
     def retrieve_warranty_policy(query: str) -> str:
         """Retrieve relevant passages from the Warranty Policy knowledge base."""
         passages = retrieve_from_knowledge_base(config.WARRANTY_KB_ID, query)
-        return config.format_kb_results(passages)
+        return format_kb_results(passages)
 
     # Create the WarrantyPolicyRetrieverAgent with the tool above
     warranty_retriever = Agent(
@@ -487,7 +471,6 @@ def build_policy_agent() -> Agent:
             tools=[retrieve_warranty_policy],
         )
 
-    # TODO: Implement search_all_policies - parallel RAG retrieval tool
     @tool
     def search_all_policies(query: str) -> str:
         """
@@ -563,14 +546,11 @@ def build_policy_agent() -> Agent:
         return '\n\n'.join(sections)
     
 
-    # TODO: Create a BedrockModel for the PolicyAgent coordinator
     model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.2)
 
-    # TODO: System prompt for PolicyAgent coordinator
     system_prompt="""You are a policy agent that retrieves data by running three specialized retriever subagents in parallel.
     Always call search_all_policies first, then synthesize the retrieved passages into a grounded answer."""
 
-    # TODO: Instantiate and return the PolicyAgent coordinator
     return Agent(model=model, system_prompt=system_prompt, tools=[search_all_policies])
 
 
@@ -586,10 +566,8 @@ def build_communication_agent() -> Agent:
     and composing a coherent, empathetic response.
     """
 
-    # TODO: Create a BedrockModel
     model = BedrockModel(model_id=config.WORKER_MODEL_ID, region_name=config.AWS_REGION, temperature=0.3)
 
-    # TODO: System prompt for the Communication Agent
     system_prompt="""You are a communication agent. Your ONLY job is to draft the final customer-facing response. 
     You will read the full WorkflowState - all findings from previous agents, and compose a warm, professional, empathetic message.
       """
@@ -612,7 +590,6 @@ def build_communication_agent() -> Agent:
             'refund_agent': state.get('refund_agent', ''),
         }
 
-    # TODO: Instantiate and return the Agent
     return Agent(model=model, system_prompt=system_prompt, tools=[get_full_workflow_context])
 
 
@@ -630,10 +607,8 @@ def build_orchestrator_agent(
     Build the Orchestrator Agent that routes requests and manages WorkflowState.
     """
 
-    # TODO: Create a BedrockModel using the ORCHESTRATOR model
     model = BedrockModel(model_id=config.ORCHESTRATOR_MODEL_ID, region_name=config.AWS_REGION, temperature=0.0)
 
-    # TODO: System prompt for the Orchestrator
     # For arithmetic, skip Inventory, Policy and Refund, but still call
     # CommunicationAgent last. Round currency only after the full calculation.
     system_prompt="""You are the orchestrator that routes requests and manages the workflowState. You DO NOT answer questions directly — 
@@ -681,7 +656,6 @@ def build_orchestrator_agent(
         trace.step_done(worker, old_version)
         return text
 
-    # TODO: Implement route_to_inventory_agent
     @tool
     def route_to_inventory_agent(session_id: str, customer_id: str, request: str) -> str:
         """
@@ -705,7 +679,6 @@ def build_orchestrator_agent(
         )
 
 
-    # TODO: Implement route_to_policy_agent
     @tool
     def route_to_policy_agent(session_id: str, request: str) -> str:
         """
@@ -722,7 +695,6 @@ def build_orchestrator_agent(
         return route_to_worker(session_id, request, policy_agent, 'policy_agent')
   
 
-    # TODO: Implement route_to_refund_agent
     @tool
     def route_to_refund_agent(session_id: str, customer_id: str, request: str) -> str:
         """
@@ -745,7 +717,6 @@ def build_orchestrator_agent(
                     customer_id=customer_id,
                 )
 
-    # TODO: Implement route_to_communication_agent
     @tool
     def route_to_communication_agent(session_id: str, customer_id: str,
                                      original_request: str) -> str:
@@ -770,7 +741,6 @@ def build_orchestrator_agent(
                 )
      
 
-    # TODO: Implement initialize_session
     @tool
     def initialize_session(session_id: str, customer_id: str) -> str:
         """
@@ -793,7 +763,6 @@ def build_orchestrator_agent(
         _create_workflow_state(session_id, customer_id)
         return f"Session {session_id} initialized for customer {customer_id}"
     
-    # TODO: Instantiate and return the OrchestratorAgent
     return Agent(
         model=model,
         system_prompt=system_prompt,
@@ -1134,7 +1103,6 @@ def configure_memory(runtime_arn: str) -> str:
             print(f"AgentCore Memory already exists: {memory_arn}")
             return memory_arn
 
-    # TODO: Create AgentCore Memory
     # Use agentcore_control.create_memory() with:
     #   - name (memory_name) and a description
     #   - eventExpiryDuration = 7   (days)
@@ -1143,10 +1111,19 @@ def configure_memory(runtime_arn: str) -> str:
     #         'namespaces': ['/summaries/{actorId}/{sessionId}']}}]
     #   - clientToken (e.g. str(uuid.uuid4())) for idempotency
     # Store the API response in `response`.
-    response = None
 
-    if response is None:
-        raise NotImplementedError("configure_memory: create_memory() not implemented")
+    response = agentcore_control.create_memory(
+        name=memory_name,
+        description=f"Session summary memory for {config.PROJECT_NAME} support agents",
+        eventExpiryDuration=7,
+        memoryStrategies=[{
+            'summaryMemoryStrategy': {
+                'name': 'SessionSummary',
+                'namespaces': ['/summaries/{actorId}/{sessionId}'],
+            }
+        }],
+        clientToken=str(uuid.uuid4()),
+    )
 
     # Wait until the memory resource is ACTIVE and return its ARN.
     memory = response['memory']
@@ -1181,7 +1158,7 @@ def configure_observability(runtime_arn: str) -> None:
                           sampling percentage; runtime env AGENT_TRACING_ENABLED /
                           AGENT_TRACE_SAMPLING_RATE
     """
-    # TODO: Build the logging configuration
+
     # logging_configuration = {
     #     'cloudWatchConfig': {'logGroupName': config.AGENT_LOG_GROUP,
     #                          'logLevel': 'INFO', 'enabled': True},
@@ -1192,7 +1169,24 @@ def configure_observability(runtime_arn: str) -> None:
     # and the X-Ray sampling rate; on exception print
     #   "[Note] Observability configuration failed: <e>"
 
-    pass
+    logging_configuration = {
+        'cloudWatchConfig': {
+            'logGroupName': config.AGENT_LOG_GROUP,
+            'logLevel': 'INFO',
+            'enabled': True,
+        },
+        'xRayConfig': {
+            'enabled': True,
+            'samplingRate': 1.0,
+        },
+    }
+
+    try:
+        apply_observability_config(runtime_arn, logging_configuration)
+        print(f"  CloudWatch logging enabled: {config.AGENT_LOG_GROUP}")
+        print("  X-Ray tracing enabled: 100% sampling")
+    except Exception as exc:
+        print(f"[Note] Observability configuration failed: {exc}")
 
 
 # ═══════════════════════════════════════════════════════
